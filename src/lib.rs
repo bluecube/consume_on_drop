@@ -27,6 +27,7 @@ mod consume_on_drop {
     use super::Consume;
     use core::mem::ManuallyDrop;
     use core::ops::{Deref, DerefMut};
+    use core::pin::Pin;
 
     /// A zero-overhead wrapper around `T`. When a [`ConsumeOnDrop<T>`] is dropped,
     /// the underlying `T` is [`Consume::consume`]d.
@@ -55,6 +56,27 @@ mod consume_on_drop {
                 // again in this function, since we moved it in a ManuallyDrop to prevent
                 // accidentally dropping it.
                 ManuallyDrop::take(&mut slot.inner)
+            }
+        }
+
+        /// Projects a pinned ConsumeOnDrop to a pinned underlying value.
+        #[inline]
+        pub fn as_pin_ref(self: Pin<&ConsumeOnDrop<T>>) -> Pin<&T> {
+            unsafe {
+                // SAFETY: The output value is a field contained by self,
+                // and therefore will not move unless self moves.
+                self.map_unchecked(|inner| inner.deref())
+            }
+        }
+
+        /// Projects a pinned mutable ConsumeOnDrop to a pinned mutable underlying value.
+        #[inline]
+        pub fn as_pin_mut(self: Pin<&mut ConsumeOnDrop<T>>) -> Pin<&mut T> {
+            unsafe {
+                // SAFETY: The output value is a field contained by self,
+                // and therefore will not move unless self moves.
+                // We did not move the value from self during the mapping.
+                self.map_unchecked_mut(|inner| inner.deref_mut())
             }
         }
     }
@@ -374,5 +396,39 @@ mod tests {
         let mut data = inner::Data::new("Hello".into());
 
         inner::extend_produce( & mut data);
+    }
+
+    mod pinning {
+        use super::*;
+
+        use core::marker::PhantomPinned;
+        use core::pin::{pin, Pin};
+
+        use crate::Consume;
+        struct Data(u32, PhantomPinned);
+
+        impl Data {
+            fn new(v: u32) -> Self {
+                Data(v, PhantomPinned)
+            }
+        }
+
+        impl Consume for Data {
+            fn consume(self) {}
+        }
+
+        #[test]
+        fn as_pin_ref() {
+            let data = pin!(ConsumeOnDrop::new(Data::new(42)));
+            let pin_ref: Pin<&Data> = data.as_ref().as_pin_ref();
+            assert_eq!(pin_ref.0, 42);
+        }
+
+        #[test]
+        fn as_pin_mut() {
+            let data = pin!(ConsumeOnDrop::new(Data::new(42)));
+            let pin_mut: Pin<&mut Data> = data.as_pin_mut();
+            assert_eq!(pin_mut.0, 42);
+        }
     }
 }
